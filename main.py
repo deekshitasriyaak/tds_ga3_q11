@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 import re
 import json
 
@@ -15,11 +15,7 @@ app.add_middleware(
 
 @app.get("/execute")
 async def execute(request: Request, q: str):
-    # Force JSON response - bypass ngrok warning
-    headers = {
-        "ngrok-skip-browser-warning": "true",
-        "Content-Type": "application/json"
-    }
+    headers = {"ngrok-skip-browser-warning": "true"}
 
     # 1. get_ticket_status(ticket_id)
     m = re.search(r'ticket\s+(\d+)', q, re.IGNORECASE)
@@ -30,7 +26,7 @@ async def execute(request: Request, q: str):
         }, headers=headers)
 
     # 2. schedule_meeting(date, time, meeting_room)
-    m = re.search(r'meeting on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) in (.+?)\.?$', q, re.IGNORECASE)
+    m = re.search(r'(\d{4}-\d{2}-\d{2}).*?(\d{2}:\d{2}).*?(?:in|room)\s+(.+?)\.?$', q, re.IGNORECASE)
     if m:
         return JSONResponse(content={
             "name": "schedule_meeting",
@@ -42,37 +38,46 @@ async def execute(request: Request, q: str):
         }, headers=headers)
 
     # 3. get_expense_balance(employee_id)
-    m = re.search(r'expense balance for employee\s+(\d+)', q, re.IGNORECASE)
-    if m:
+    m = re.search(r'expense.*?(\d+)|(\d+).*?expense', q, re.IGNORECASE)
+    if m and ('expense' in q.lower() or 'reimburs' in q.lower()):
+        emp_id = int(m.group(1) or m.group(2))
         return JSONResponse(content={
             "name": "get_expense_balance",
-            "arguments": json.dumps({"employee_id": int(m.group(1))})
+            "arguments": json.dumps({"employee_id": emp_id})
         }, headers=headers)
 
     # 4. calculate_performance_bonus(employee_id, current_year)
-    m = re.search(r'bonus for employee\s+(\d+) for (\d{4})', q, re.IGNORECASE)
-    if m:
-        return JSONResponse(content={
-            "name": "calculate_performance_bonus",
-            "arguments": json.dumps({
-                "employee_id": int(m.group(1)),
-                "current_year": int(m.group(2))
-            })
-        }, headers=headers)
+    # Matches: "bonus for employee X for YYYY", "Employee X performance bonus YYYY", etc.
+    if re.search(r'bonus|performance', q, re.IGNORECASE):
+        emp = re.search(r'employee\s+(\d+)|(\d+)\s+performance|emp(?:loyee)?\s*[:#]?\s*(\d+)', q, re.IGNORECASE)
+        yr = re.search(r'(20\d{2})', q)
+        if emp and yr:
+            emp_id = int(next(g for g in emp.groups() if g))
+            return JSONResponse(content={
+                "name": "calculate_performance_bonus",
+                "arguments": json.dumps({
+                    "employee_id": emp_id,
+                    "current_year": int(yr.group(1))
+                })
+            }, headers=headers)
 
     # 5. report_office_issue(issue_code, department)
-    m = re.search(r'issue\s+(\d+) for the (.+?) department', q, re.IGNORECASE)
-    if m:
-        return JSONResponse(content={
-            "name": "report_office_issue",
-            "arguments": json.dumps({
-                "issue_code": int(m.group(1)),
-                "department": m.group(2).strip()
-            })
-        }, headers=headers)
+    if re.search(r'issue|report|office', q, re.IGNORECASE):
+        code = re.search(r'issue\s+(\d+)|(\d+)\s+(?:for|in)\s+the', q, re.IGNORECASE)
+        dept = re.search(r'(?:for the|department[:\s]+)\s*([A-Za-z]+)\s+department|([A-Za-z]+)\s+department', q, re.IGNORECASE)
+        if code and dept:
+            issue_code = int(next(g for g in code.groups() if g))
+            department = next(g for g in dept.groups() if g)
+            return JSONResponse(content={
+                "name": "report_office_issue",
+                "arguments": json.dumps({
+                    "issue_code": issue_code,
+                    "department": department.strip()
+                })
+            }, headers=headers)
 
     return JSONResponse(
-        content={"error": "No matching function found"},
+        content={"error": "No matching function found", "query": q},
         status_code=400,
         headers=headers
     )
